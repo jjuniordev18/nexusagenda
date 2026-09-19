@@ -1,0 +1,42 @@
+# Dependencies
+node_modules
+
+# Next.js
+.next
+out
+
+# Build artifacts
+tsconfig.tsbuildinfo
+*.tsbuildinfo
+
+# Netlify
+.netlify
+
+# Environment
+.env
+.env.local
+.env.production
+
+# Database
+prisma/dev.db
+
+# Debug
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Backups
+*.bak
+*.bak2
+
+# Deploy folders
+deploy-out
+deploy-optimized
+.next-backup
+
+# Other projects (not part of nexusagenda)
+agent-skills/
+humanizer/
+website-builder/

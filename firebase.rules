@@ -1,0 +1,17 @@
+{
+  "rules": {
+    "tasks": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "$taskId": {
+        ".validate": "newData.hasChildren(['title', 'priority', 'status', 'createdAt'])"
+      }
+    },
+    "users": {
+      "$uid": {
+        ".read": "$uid === auth.uid",
+        ".write": "$uid === auth.uid"
+      }
+    }
+  }
+}
