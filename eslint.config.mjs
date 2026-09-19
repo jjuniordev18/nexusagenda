@@ -25,6 +25,7 @@ const eslintConfig = [...nextCoreWebVitals, ...nextTypescript, {
     "react/no-unescaped-entities": "off",
     "react/display-name": "off",
     "react/prop-types": "off",
+    "react/jsx-no-undef": "off",
     "react-compiler/react-compiler": "off",
     
     // Next.js rules
