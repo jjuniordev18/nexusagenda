@@ -62,6 +62,15 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
 
   const signup = async (email: string, password: string) => {
     if (!auth) throw new Error('Firebase auth não inicializado');
+    if (password.length < 8) {
+      throw new Error('A senha deve ter pelo menos 8 caracteres');
+    }
+    if (!/[A-Z]/.test(password) || !/[0-9]/.test(password)) {
+      throw new Error('A senha deve conter pelo menos uma letra maiúscula e um número');
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new Error('Email inválido');
+    }
     await createUserWithEmailAndPassword(auth, email, password);
   };
 

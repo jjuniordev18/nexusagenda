@@ -120,3 +120,92 @@
     @apply bg-background text-foreground;
   }
 }
+
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+
+.animate-marquee {
+  animation: marquee 30s linear infinite;
+}
+
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@keyframes spin-gradient {
+  to { --angle: 360deg; }
+}
+
+.animate-gradient-border {
+  animation: spin-gradient 6s linear infinite;
+}
+
+@keyframes aurora-a {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(3rem, -2rem) scale(1.15); }
+  66% { transform: translate(-2rem, 2rem) scale(0.85); }
+}
+
+@keyframes aurora-b {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  40% { transform: translate(-3rem, 2.5rem) scale(1.1); }
+  70% { transform: translate(2rem, -1.5rem) scale(0.9); }
+}
+
+@keyframes aurora-c {
+  0%, 100% { transform: translate(0, 0) scale(1) rotate(0deg); }
+  50% { transform: translate(2.5rem, 1.5rem) scale(1.2) rotate(20deg); }
+}
+
+.aurora-blob {
+  will-change: transform;
+}
+
+.aurora-a { animation: aurora-a 22s ease-in-out infinite; }
+.aurora-b { animation: aurora-b 26s ease-in-out infinite; }
+.aurora-c { animation: aurora-c 30s ease-in-out infinite; }
+
+.glass-card {
+  background: color-mix(in oklch, white 74%, transparent);
+  -webkit-backdrop-filter: blur(14px);
+  backdrop-filter: blur(14px);
+  border-color: rgb(255 255 255 / 0.55);
+  box-shadow: 0 10px 30px -12px rgb(0 0 0 / 0.18);
+}
+
+.dark .glass-card {
+  background: color-mix(in oklch, #1e293b 62%, transparent);
+  border-color: rgb(255 255 255 / 0.08);
+  box-shadow: 0 12px 32px -14px rgb(0 0 0 / 0.55);
+}
+
+.glow-focus {
+  box-shadow: 0 0 0 4px rgb(168 85 247 / 0.14);
+  transition: box-shadow 0.2s ease;
+}
+
+.glow-focus:focus-within,
+.glow-focus:focus {
+  box-shadow: 0 0 0 4px rgb(168 85 247 / 0.22), 0 0 22px rgb(236 72 153 / 0.35);
+}
+
+.btn-glow {
+  box-shadow: 0 8px 24px -8px rgb(190 24 93 / 0.55);
+  transition: box-shadow 0.2s ease, transform 0.15s ease;
+}
+
+.btn-glow:hover {
+  box-shadow: 0 10px 32px -6px rgb(190 24 93 / 0.7), 0 0 18px rgb(168 85 247 / 0.35);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-marquee,
+  .animate-gradient-border,
+  .aurora-blob {
+    animation: none !important;
+  }
+}

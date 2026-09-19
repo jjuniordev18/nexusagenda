@@ -7,12 +7,13 @@ import { useTheme } from 'next-themes';
 import { 
   Plus, Zap, Trash2, CheckCircle2, Clock,
   Target, TrendingUp, Calendar as CalendarIcon, Search, Filter,
-  Moon, Sun, Bell,
+  Bell,
   Mic, Volume2, Loader2, Briefcase,
   User, BookOpen, X, Trophy, Timer, LayoutGrid, List,
+  Pencil,
   Archive, RotateCw, Minus, GripVertical,
   CircleDot, Clock3, Eye as EyeIcon, CheckCheck, MoreHorizontal,
-  MicOff, Square, CheckSquare, RefreshCw
+  MicOff, Square, CheckSquare, RefreshCw, WifiOff
 } from 'lucide-react';
 import { DndContext, DragOverlay, closestCenter, PointerSensor, useSensor, useSensors, DragStartEvent, DragEndEvent, useDroppable } from '@dnd-kit/core';
 import { SortableContext, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -21,7 +22,7 @@ import { useSpeechRecognition } from '@/hooks/use-speech-recognition';
 import { useSpeechSynthesis } from '@/hooks/use-speech-synthesis';
 import { loadTasksFromStorage, saveTasksToStorage, addTaskToStorage, updateTaskInStorage, removeTaskFromStorage } from '@/lib/task-helpers';
 import { useStats } from '@/hooks/use-stats';
-import { useFilteredTasks } from '@/hooks/use-filtered-tasks';
+import { useFilteredTasks, type PriorityFilter, type DueFilter } from '@/hooks/use-filtered-tasks';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -33,10 +34,12 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
 import { useToast } from '@/hooks/use-toast';
+import { ToastAction } from '@/components/ui/toast';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Separator } from '@/components/ui/separator';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { ClockWidget, WeatherWidget } from '@/components/widgets';
+import { ProfileCard } from '@/components/profile-card';
 import { TaskAlert } from '@/components/task-alert';
 import { useTaskNotifications } from '@/hooks/use-task-notifications';
 import { database, ref, onValue, set, push, update, remove } from '@/lib/firebase';
@@ -124,6 +127,72 @@ const energyConfig = {
   4: { label: 'Alta', emoji: '🔥', color: 'from-orange-400 to-orange-500' },
   5: { label: 'Muito Alta', emoji: '⚡', color: 'from-red-400 to-red-500' },
 };
+
+const EditableTitle = memo(function EditableTitle({
+  task,
+  onRename,
+}: {
+  task: Task;
+  onRename: (id: string, title: string) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(task.title);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editing) {
+      setDraft(task.title);
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
+  }, [editing, task.title]);
+
+  const commit = () => {
+    const trimmed = draft.trim();
+    setEditing(false);
+    if (trimmed && trimmed !== task.title) {
+      onRename(task.id, trimmed);
+    }
+  };
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
+          if (e.key === 'Enter') commit();
+          if (e.key === 'Escape') setEditing(false);
+        }}
+        className="w-full min-w-0 rounded-md border border-purple-400 bg-transparent px-1.5 py-0.5 text-sm md:text-base font-medium text-slate-900 dark:text-white outline-none ring-2 ring-purple-500/40"
+        aria-label="Editar título da tarefa"
+      />
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1 min-w-0">
+      <h4 className="font-medium text-sm md:text-base truncate min-w-0">
+        {task.title}
+      </h4>
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setEditing(true);
+        }}
+        className="text-slate-400 hover:text-purple-500 active:scale-90 transition-all shrink-0 sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
+        aria-label={`Renomear tarefa ${task.title}`}
+        title="Renomear"
+      >
+        <Pencil className="w-3 h-3 sm:w-3.5 sm:h-3.5" aria-hidden="true" />
+      </button>
+    </div>
+  );
+});
 
 const SortableTask = memo(function SortableTask({ task, onClick, categories }: { task: Task; onClick: () => void; categories: Category[] }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: task.id });
@@ -230,6 +299,8 @@ export default function NexusApp() {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>('all');
+  const [dueFilter, setDueFilter] = useState<DueFilter>('all');
   const [activeTab, setActiveTab] = useState<'tarefas' | 'kanban'>('tarefas');
   const [activeTask, setActiveTask] = useState<Task | null | undefined>(undefined);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -237,6 +308,7 @@ export default function NexusApp() {
   const [editingTask, setEditingTask] = useState<Task | null | undefined>(undefined);
   const [showAchievements, setShowAchievements] = useState(false);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
+  const [isOnline, setIsOnline] = useState(true);
   const { toast } = useToast();
   const { theme, setTheme } = useTheme();
   const [calendarOpen, setCalendarOpen] = useState(false);
@@ -292,6 +364,19 @@ export default function NexusApp() {
     const timer = setTimeout(() => setDebouncedSearch(searchQuery), 200);
     return () => clearTimeout(timer);
   }, [searchQuery]);
+
+  // Monitorar conexão
+  useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    setIsOnline(typeof navigator !== 'undefined' ? navigator.onLine : true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   // Carregar tarefas (Firebase ou localStorage)
   useEffect(() => {
@@ -614,6 +699,7 @@ export default function NexusApp() {
 
   const handleCompleteTask = async (task: Task) => {
     const updates: Partial<Task> = { status: 'completed', completedAt: Date.now() };
+    const previous = tasks.find(t => t.id === task.id);
 
     if (task.recurring && task.recurring !== 'none') {
       const nextDueDate = new Date(task.dueDate || Date.now());
@@ -651,7 +737,16 @@ export default function NexusApp() {
       }
       toast({ title: 'Tarefa concluída!', description: `Próxima ocorrência agendada para ${formatLocalDate(newTask.dueDate)}` });
     } else {
-      handleUpdateTaskDirect(task.id, updates);
+      await persistTaskUpdate(task.id, updates);
+      toast({
+        title: 'Tarefa concluída! 🎉',
+        description: `"${task.title}" concluída${task.points ? ` (+${task.points} pts)` : ''}`,
+        action: (
+          <ToastAction altText="Desfazer conclusão" onClick={() => restoreTaskStatus(task, previous)}>
+            Desfazer
+          </ToastAction>
+        ),
+      });
     }
   };
 
@@ -660,19 +755,35 @@ export default function NexusApp() {
     setEditingTask(null);
   };
 
-  const handleUpdateTaskDirect = async (id: string, updates: Partial<Task>) => {
+  const persistTaskUpdate = async (id: string, updates: Partial<Task>): Promise<boolean> => {
     if (database && user) {
       try {
         const taskRef = ref(database, `users/${user.uid}/tasks/${id}`);
         await update(taskRef, updates);
+        return true;
       } catch {
         toast({ title: 'Erro', description: 'Falha ao atualizar tarefa no servidor', variant: 'destructive' });
-        return;
+        return false;
       }
     } else {
       setTasks(updateTaskInStorage(id, updates));
+      return true;
     }
+  };
+
+  const handleUpdateTaskDirect = async (id: string, updates: Partial<Task>) => {
+    await persistTaskUpdate(id, updates);
     toast({ title: 'Sucesso', description: 'Tarefa atualizada!' });
+  };
+
+  const restoreTaskStatus = async (task: Task, previous?: Task) => {
+    const prevSnapshot: Partial<Task> = previous
+      ? { status: previous.status, completedAt: previous.completedAt ?? null, archivedAt: previous.archivedAt ?? null }
+      : { status: 'pending', completedAt: null };
+    const ok = await persistTaskUpdate(task.id, prevSnapshot);
+    if (ok) {
+      toast({ title: 'Desfeito', description: `"${task.title}" voltou para o estado anterior` });
+    }
   };
 
   const handleToggleSubtask = async (taskId: string, subtaskId: string) => {
@@ -706,6 +817,7 @@ export default function NexusApp() {
   const confirmDeleteTask = async () => {
     if (!deleteConfirmId) return;
     const id = deleteConfirmId;
+    const deletedTask = tasks.find(t => t.id === id);
     setDeleteConfirmId(null);
     if (database && user) {
       try {
@@ -718,11 +830,37 @@ export default function NexusApp() {
     } else {
       setTasks(removeTaskFromStorage(id));
     }
-    toast({ title: 'Sucesso', description: 'Tarefa excluída!' });
+    toast({
+      title: 'Tarefa excluída!',
+      description: deletedTask ? `"${deletedTask.title}" foi removida` : undefined,
+      action: deletedTask ? (
+        <ToastAction altText="Restaurar tarefa" onClick={() => restoreDeletedTask(deletedTask)}>
+          Restaurar
+        </ToastAction>
+      ) : undefined,
+    });
+  };
+
+  const restoreDeletedTask = async (task: Task) => {
+    if (database && user) {
+      try {
+        const taskRef = ref(database, `users/${user.uid}/tasks/${task.id}`);
+        await set(taskRef, task);
+      } catch {
+        toast({ title: 'Erro', description: 'Falha ao restaurar tarefa no servidor', variant: 'destructive' });
+        return;
+      }
+    } else {
+      const existing = loadTasksFromStorage();
+      const updated = [task, ...existing];
+      saveTasksToStorage(updated);
+      setTasks(updated);
+    }
+    toast({ title: 'Restaurada!', description: `"${task.title}" voltou para sua lista` });
   };
 
   const unlockedAchievements = achievements.filter(a => a.unlocked).length;
-  const { filteredTasks, tasksByEnergy } = useFilteredTasks(tasks, debouncedSearch, statusFilter);
+  const { filteredTasks, tasksByEnergy } = useFilteredTasks(tasks, debouncedSearch, statusFilter, priorityFilter, dueFilter);
 
   if (loading || authLoading) {
     return (
@@ -743,11 +881,16 @@ export default function NexusApp() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+    <div className="relative min-h-screen bg-gradient-to-br from-slate-50 via-white to-slate-100 dark:from-slate-900 dark:via-slate-800 dark:to-slate-900">
+      <div aria-hidden="true" className="fixed inset-0 z-0 pointer-events-none overflow-hidden">
+        <div className="aurora-blob aurora-a absolute -top-56 -left-40 h-[32rem] w-[32rem] rounded-full bg-gradient-to-br from-purple-400/40 to-pink-400/30 blur-[90px]" />
+        <div className="aurora-blob aurora-b absolute top-1/4 -right-48 h-[28rem] w-[28rem] rounded-full bg-gradient-to-br from-blue-400/40 to-cyan-400/30 blur-[90px]" />
+        <div className="aurora-blob aurora-c absolute -bottom-56 left-1/4 h-[30rem] w-[30rem] rounded-full bg-gradient-to-br from-fuchsia-400/25 to-indigo-400/25 blur-[100px]" />
+      </div>
       <header className="sticky top-0 z-50 border-b bg-white/80 dark:bg-slate-900/80 backdrop-blur-md safe-area-inset-top">
         <div className="px-2 py-2 md:px-3 md:py-3">
-          <div className="flex items-center justify-between gap-1 md:gap-2">
-            <div className="flex items-center gap-1 md:gap-2">
+          <div className="flex flex-wrap items-center justify-between gap-x-1 gap-y-2 md:gap-x-2">
+            <div className="flex items-center gap-1 md:gap-2 shrink-0">
               <motion.div
                 className="w-8 h-8 md:w-10 md:h-10 rounded-lg md:rounded-xl flex items-center justify-center"
                 animate={{
@@ -812,7 +955,22 @@ export default function NexusApp() {
               </div>
             </div>
 
-            <div className="flex items-center gap-1 md:gap-2">
+              <div className="shrink-0 min-w-0">
+                <ProfileCard displayName={displayName} email={user?.email || null} setDisplayName={setDisplayName} />
+              </div>
+
+            <div className="flex-1 flex items-center justify-center gap-1 md:gap-2.5 flex-wrap min-w-0">
+              {!isOnline && (
+                <Badge
+                  variant="outline"
+                  role="status"
+                  aria-label="Modo offline"
+                  className="gap-1.5 px-2 py-1 text-xs border-amber-400/60 text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-900/30"
+                >
+                  <WifiOff className="w-3 h-3" aria-hidden="true" />
+                  <span className="hidden sm:inline">Offline</span>
+                </Badge>
+              )}
               <div className="hidden lg:flex items-center gap-2">
                 <ClockWidget />
                 <WeatherWidget />
@@ -824,51 +982,109 @@ export default function NexusApp() {
                   <span>{Math.floor(pomodoroTime / 60)}:{(pomodoroTime % 60).toString().padStart(2, '0')}</span>
                 </Badge>
               )}
-              
-              <Button
-                size="icon"
-                variant={pomodoroActive ? "default" : "ghost"}
-                className={`w-9 h-9 md:w-10 md:h-10 ${pomodoroActive ? 'bg-red-500 hover:bg-red-600' : ''}`}
-                onClick={() => {
-                  if (pomodoroActive) {
-                    setPomodoroActive(false);
-                  } else {
-                    setPomodoroTime(25 * 60);
-                    setPomodoroActive(true);
-                    setPomodoroSession('work');
-                  }
-                }}
-              >
-                <Timer className="w-4 h-4" />
-              </Button>
-              
 
-              
-              <Button size="icon" variant="ghost" className="w-9 h-9 md:w-10 md:h-10 relative" onClick={() => setShowAchievements(true)} aria-label={`Conquistas: ${unlockedAchievements} desbloqueadas`}>
-                <Trophy className="w-4 h-4" />
-                {unlockedAchievements > 0 && (
-                  <span className="absolute -top-1 -right-1 bg-yellow-500 text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center" aria-hidden="true">
-                    {unlockedAchievements}
-                  </span>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex flex-row gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (pomodoroActive) {
+                        setPomodoroActive(false);
+                      } else {
+                        setPomodoroTime(25 * 60);
+                        setPomodoroActive(true);
+                        setPomodoroSession('work');
+                      }
+                    }}
+                    title={pomodoroActive ? 'Pausar pomodoro' : 'Iniciar pomodoro (25 min)'}
+                    aria-label={pomodoroActive ? 'Pausar pomodoro' : 'Iniciar pomodoro'}
+                    className={`w-8 h-8 md:w-10 md:h-10 outline-none border-none bg-white dark:bg-slate-800 rounded-[2.25rem_0.25rem_0.25rem_0.25rem] shadow-lg transition-all duration-200 ease-in-out group flex items-center justify-center ${pomodoroActive ? 'bg-red-500 hover:bg-red-600' : 'hover:scale-110 hover:bg-[#03A9F4]'}`}
+                  >
+                    <Timer className={`w-4 h-4 transition-colors duration-200 ${pomodoroActive ? 'text-white' : 'text-[#03A9F4] group-hover:fill-white group-hover:text-white'}`} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={requestNotificationPermission}
+                    title="Ativar notificações"
+                    aria-label="Ativar notificações"
+                    className="w-8 h-8 md:w-10 md:h-10 outline-none border-none bg-white dark:bg-slate-800 rounded-[0.25rem_2.25rem_0.25rem_0.25rem] shadow-lg transition-all duration-200 ease-in-out hover:scale-110 hover:bg-[#cc39a4] group flex items-center justify-center"
+                  >
+                    <Bell className="w-4 h-4 text-[#cc39a4] group-hover:fill-white group-hover:text-white transition-colors duration-200" />
+                  </button>
+                </div>
+
+                <div className="flex flex-row gap-1.5">
+                  {speechRecognitionSupported && (
+                  <button
+                    type="button"
+                    onClick={handleVoiceCreate}
+                    title="Criar tarefa por voz"
+                    aria-label="Criar tarefa por voz"
+                    className="w-8 h-8 md:w-10 md:h-10 outline-none border-none bg-white dark:bg-slate-800 rounded-[0.25rem_0.25rem_0.25rem_2.25rem] shadow-lg transition-all duration-200 ease-in-out hover:scale-110 hover:bg-black group flex items-center justify-center"
+                  >
+                    <Mic className="w-4 h-4 text-black dark:text-white group-hover:fill-white group-hover:text-white transition-colors duration-200" />
+                  </button>
                 )}
-              </Button>
-              
+
+                  <button
+                    type="button"
+                    onClick={() => setShowAchievements(true)}
+                    title="Conquistas"
+                    aria-label={`Conquistas: ${unlockedAchievements} desbloqueadas`}
+                    className="relative w-8 h-8 md:w-10 md:h-10 outline-none border-none bg-white dark:bg-slate-800 rounded-[0.25rem_0.25rem_2.25rem_0.25rem] shadow-lg transition-all duration-200 ease-in-out hover:scale-110 hover:bg-[#8c9eff] group flex items-center justify-center"
+                  >
+                    <Trophy className="w-4 h-4 text-[#8c9eff] group-hover:fill-white group-hover:text-white transition-colors duration-200" />
+                    {unlockedAchievements > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-yellow-500 text-white text-[10px] w-4 h-4 rounded-full flex items-center justify-center" aria-hidden="true">
+                        {unlockedAchievements}
+                      </span>
+                    )}
+                  </button>
+                </div>
+              </div>
+
               <Badge variant="outline" className="gap-1 px-2 py-1 text-xs">
                 <Zap className="w-3 h-3 text-yellow-500" aria-hidden="true" />
                 <span className="font-semibold hidden sm:inline">{stats.points} pts</span>
               </Badge>
 
-              <Button variant="ghost" size="icon" onClick={requestNotificationPermission} title="Ativar notificações" aria-label="Ativar notificações">
-                <Bell className="w-5 h-5" />
-              </Button>
+              <div
+                  className="group w-16 aspect-video rounded-lg has-[:checked]:bg-[#3a3347] bg-[#ebe6ef] border-4 border-[#121331] overflow-hidden focus-within:ring-2 focus-within:ring-purple-500"
+                  title={theme === 'light' ? 'Alternar para tema escuro' : 'Alternar para tema claro'}
+                >
+                  <div className="relative flex h-full w-full px-1 items-center gap-x-1">
+                    <div className="w-2 h-2 flex-shrink-0 rounded-full border-4 border-[#121331]" />
+                    <label
+                      htmlFor="theme-switch"
+                      className="relative h-full flex-1 cursor-pointer"
+                      aria-label={theme === 'light' ? 'Alternar para tema escuro' : 'Alternar para tema claro'}
+                    >
+                      <input
+                        type="checkbox"
+                        id="theme-switch"
+                        className="sr-only"
+                        checked={theme === 'dark'}
+                        onChange={toggleTheme}
+                      />
+                      <div
+                        className="absolute left-0 top-1/2 -translate-y-1/2 transition-transform duration-300 ease-out group-has-[:checked]:translate-x-[20px]"
+                        aria-hidden="true"
+                      >
+                        <div className="relative">
+                          <div className="w-0 h-0 border-l-[10px] border-l-transparent border-r-[10px] border-r-transparent border-t-[8px] border-t-[#121331] -mb-px" />
+                          <div className="w-[18px] h-[12px] bg-[#f24c00] border-2 border-[#121331] rounded-[3px] relative">
+                            <div className="absolute -top-[3px] -left-[2px] w-[8px] h-[6px] bg-[#e44901] rounded-sm border border-[#121331]/50" />
+                          </div>
+                        </div>
+                      </div>
+                    </label>
+                    <div className="w-3 h-0.5 flex-shrink-0 bg-[#121331] rounded-full" />
+                  </div>
+                </div>
 
-              <Button variant="ghost" size="icon" onClick={toggleTheme} aria-label={theme === 'light' ? 'Alternar para tema escuro' : 'Alternar para tema claro'}>
-                {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
-              </Button>
-
-              <Button 
-                variant="ghost" 
-                size="icon" 
+              <button
+                type="button"
                 onClick={async () => {
                   try {
                     await logout();
@@ -879,52 +1095,58 @@ export default function NexusApp() {
                 }}
                 title="Sair"
                 aria-label="Sair da conta"
-                className="text-red-500 hover:text-red-600"
+                className="group flex items-center justify-start w-11 h-11 bg-gradient-to-br from-red-500 to-rose-600 rounded-full cursor-pointer relative overflow-hidden transition-all duration-200 shadow-lg shadow-red-500/30 hover:w-32 hover:rounded-lg hover:shadow-red-500/50 active:translate-x-1 active:translate-y-1"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                </svg>
-              </Button>
-
-              {speechRecognitionSupported && (
-                <Button 
-                  variant="outline" 
-                  size="icon"
-                  className="w-9 h-9 md:w-10 md:h-10 text-purple-600 hover:text-purple-700"
-                  onClick={handleVoiceCreate}
-                  title="Criar tarefa por voz"
-                  aria-label="Criar tarefa por voz"
-                >
-                  <Mic className="w-4 h-4 md:w-5 md:h-5" />
-                </Button>
-              )}
+                <div className="flex items-center justify-center w-full transition-all duration-300 group-hover:justify-start group-hover:px-3">
+                  <svg className="w-4 h-4" viewBox="0 0 512 512" fill="white" aria-hidden="true">
+                    <path d="M377.9 105.9L500.7 228.7c7.2 7.2 11.3 17.1 11.3 27.3s-4.1 20.1-11.3 27.3L377.9 406.1c-6.4 6.4-15 9.9-24 9.9c-18.7 0-33.9-15.2-33.9-33.9l0-62.1-128 0c-17.7 0-32-14.3-32-32l0-64c0-17.7 14.3-32 32-32l128 0 0-62.1c0-18.7 15.2-33.9 33.9-33.9c9 0 17.6 3.6 24 9.9zM160 96L96 96c-17.7 0-32 14.3-32 32l0 256c0 17.7 14.3 32 32 32l64 0c17.7 0 32 14.3 32 32s-14.3 32-32 32l-64 0c-53 0-96-43-96-96L0 128C0 75 43 32 96 32l64 0c17.7 0 32 14.3 32 32s-14.3 32-32 32z" />
+                  </svg>
+                </div>
+                <div className="absolute right-5 transform translate-x-full opacity-0 text-white text-lg font-semibold transition-all duration-300 group-hover:translate-x-0 group-hover:opacity-100">
+                  Logout
+                </div>
+              </button>
 
               <Dialog open={isCreateOpen} onOpenChange={setIsCreateOpen}>
                 <DialogTrigger asChild>
-                  <Button className="gap-1 md:gap-2 bg-gradient-to-r from-purple-500 to-pink-500 px-2 md:px-4">
+                  <button
+                    type="button"
+                    className="cursor-pointer uppercase glass-card text-slate-800 dark:text-slate-100 px-4 py-2.5 rounded-md active:translate-x-0.5 active:translate-y-0.5 hover:shadow-[0.5rem_0.5rem_#F44336,-0.5rem_-0.5rem_#00BCD4] transition flex items-center gap-1 md:gap-2"
+                    aria-label="Criar nova tarefa"
+                  >
                     <Plus className="w-4 h-4" />
                     <span className="hidden sm:inline">Nova</span>
-                  </Button>
+                  </button>
                 </DialogTrigger>
-                <DialogContent className="w-[calc(100%-16px)] max-w-lg max-h-[85vh] overflow-y-auto p-4">
-                  <DialogHeader className="pb-2">
-                    <DialogTitle>Criar Nova Tarefa</DialogTitle>
-                    <DialogDescription>Adicione uma nova tarefa</DialogDescription>
-                  </DialogHeader>
-                  <div className="space-y-4 pt-4">
+                <DialogContent className="w-[calc(100%-16px)] max-w-lg max-h-[85vh] overflow-hidden bg-white dark:bg-slate-900 border-0 rounded-md shadow-xl p-0 [&_[data-slot='dialog-close']]:text-slate-500 [&_[data-slot='dialog-close']]:dark:text-slate-400 [&_[data-slot='dialog-close']]:opacity-80 [&_[data-slot='dialog-close']]:top-2 [&_[data-slot='dialog-close']]:right-2">
+                  <div className="relative h-full">
+                  <p
+                    className="text-purple-500/50 dark:text-purple-400/40 translate-x-[46%] -rotate-90 tracking-[20px] hover:translate-x-[50%] -translate-y-1/2 font-semibold text-2xl absolute right-0 top-1/2 pointer-events-none select-none"
+                    aria-hidden="true"
+                  >
+                    Nova
+                  </p>
+                  <div className="capitalize overflow-y-auto max-h-[85vh] py-5 px-6 flex flex-col gap-3">
                     <div>
-                      <Label>Título *</Label>
+                      <DialogTitle className="text-2xl text-slate-900 dark:text-white pb-1 leading-tight">Criar Nova Tarefa</DialogTitle>
+                      <DialogDescription className="text-sm text-purple-600 dark:text-purple-300">Adicione uma nova tarefa</DialogDescription>
+                    </div>
+                    <div className="flex flex-col gap-4">
+                    <div>
+                      <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Título *</Label>
                       <Input placeholder="Ex: Reunião com cliente" value={formData.title}
-                        onChange={(e) => setFormData({ ...formData, title: e.target.value })} />
+                        onChange={(e) => setFormData({ ...formData, title: e.target.value })}
+                        className="w-full py-px pl-0 bg-transparent outline-none focus:ring-0 border-0 border-b-2 border-purple-400 dark:border-purple-500 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none text-slate-800 dark:text-slate-100 placeholder:text-xs rounded-none shadow-none" />
                     </div>
                     <div>
-                      <Label>Descrição</Label>
+                      <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Descrição</Label>
                       <Textarea placeholder="Detalhes..." value={formData.description}
-                        onChange={(e) => setFormData({ ...formData, description: e.target.value })} rows={2} />
+                        onChange={(e) => setFormData({ ...formData, description: e.target.value })} rows={2}
+                        className="w-full py-px pl-0 bg-transparent outline-none focus:ring-0 border-0 border-b-2 border-purple-400 dark:border-purple-500 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none text-slate-800 dark:text-slate-100 placeholder:text-xs rounded-none shadow-none resize-none" />
                     </div>
                     
                     <div>
-                      <Label>Categoria</Label>
+                      <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Categoria</Label>
                       <div className="flex gap-2 mt-2">
                         {categories.map((cat) => {
                           const config = categoryConfig[cat.id as keyof typeof categoryConfig];
@@ -936,11 +1158,16 @@ export default function NexusApp() {
                               variant={formData.categoryId === cat.id ? "default" : "outline"}
                               size="sm"
                               onClick={() => setFormData({ ...formData, categoryId: cat.id })}
-                              className={`flex-1 gap-1 ${formData.categoryId === cat.id ? config?.bgLight : ''}`}
+                              className={`flex-1 gap-1 ${
+                                formData.categoryId === cat.id
+                                  ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white border-transparent hover:from-purple-500 hover:to-pink-500'
+                                  : 'bg-transparent border-purple-400 dark:border-purple-500/60 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30'
+                              }`}
                               style={formData.categoryId === cat.id ? { 
                                 backgroundColor: cat.color + '20', 
                                 borderColor: cat.color,
-                                color: cat.color
+                                color: cat.color,
+                                backgroundImage: 'none'
                               } : {}}
                             >
                               {Icon && <Icon className="w-4 h-4" />}
@@ -953,10 +1180,10 @@ export default function NexusApp() {
 
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <Label>Prioridade</Label>
+                        <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Prioridade</Label>
                         <Select value={formData.priority}
                           onValueChange={(v) => setFormData({ ...formData, priority: v as Task['priority'] })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-full py-px pl-0 bg-transparent outline-none focus:ring-0 border-0 border-b-2 border-purple-400 dark:border-purple-500 focus:outline-none text-slate-800 dark:text-slate-100 rounded-none shadow-none [&_svg]:text-purple-500 dark:[&_svg]:text-purple-400 data-[placeholder]:text-slate-400 dark:data-[placeholder]:text-slate-500"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="low">😌 Baixa</SelectItem>
                             <SelectItem value="medium">😊 Média</SelectItem>
@@ -966,10 +1193,10 @@ export default function NexusApp() {
                         </Select>
                       </div>
                       <div>
-                        <Label>Energia</Label>
+                        <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Energia</Label>
                         <Select value={String(formData.energyLevel)}
                           onValueChange={(v) => setFormData({ ...formData, energyLevel: Number(v) })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-full py-px pl-0 bg-transparent outline-none focus:ring-0 border-0 border-b-2 border-purple-400 dark:border-purple-500 focus:outline-none text-slate-800 dark:text-slate-100 rounded-none shadow-none [&_svg]:text-purple-500 dark:[&_svg]:text-purple-400 data-[placeholder]:text-slate-400 dark:data-[placeholder]:text-slate-500"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="1">😌 Muito Baixa</SelectItem>
                             <SelectItem value="2">🙂 Baixa</SelectItem>
@@ -982,13 +1209,13 @@ export default function NexusApp() {
                     </div>
 
                     <div>
-                      <Label>Data de Vencimento</Label>
-                      <Suspense fallback={<div className="h-10 w-full border rounded-md bg-muted animate-pulse" />}>
+                      <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Data de Vencimento</Label>
+                      <Suspense fallback={<div className="h-10 w-full rounded-md bg-purple-100 dark:bg-purple-900/30 animate-pulse" />}>
                       <Popover open={calendarOpen} onOpenChange={setCalendarOpen}>
                         <PopoverTrigger asChild>
                           <Button
                             variant="outline"
-                            className={`w-full justify-start text-left font-normal mt-2 ${!formData.dueDate && 'text-muted-foreground'}`}
+                            className={`w-full justify-start text-left font-normal mt-2 rounded-none border-0 border-b-2 border-purple-400 dark:border-purple-500 bg-transparent text-slate-800 dark:text-slate-100 shadow-none hover:bg-purple-50 dark:hover:bg-purple-900/30 ${!formData.dueDate && 'text-slate-400 dark:text-slate-500'}`}
                           >
                             <CalendarIcon className="mr-2 h-4 w-4" />
                             {formData.dueDate ? (
@@ -1055,7 +1282,7 @@ export default function NexusApp() {
 
                     {formData.dueDate && (
                       <div>
-                        <Label>Lembretes</Label>
+                        <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Lembretes</Label>
                         <div className="flex flex-wrap gap-2 mt-2">
                           {reminderOptions.map(option => (
                             <Button
@@ -1063,7 +1290,11 @@ export default function NexusApp() {
                               type="button"
                               size="sm"
                               variant={formData.reminders.includes(option.value) ? "default" : "outline"}
-                              className="text-xs"
+                              className={`text-xs ${
+                                formData.reminders.includes(option.value)
+                                  ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white border-transparent hover:from-purple-500 hover:to-pink-500'
+                                  : 'bg-transparent border-purple-400 dark:border-purple-500/60 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30'
+                              }`}
                               onClick={() => {
                                 const newReminders = formData.reminders.includes(option.value)
                                   ? formData.reminders.filter(r => r !== option.value)
@@ -1081,10 +1312,10 @@ export default function NexusApp() {
 
                     <div className="grid grid-cols-2 gap-4">
                       <div>
-                        <Label>Recorrência</Label>
+                        <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Recorrência</Label>
                         <Select value={formData.recurring || 'none'}
                           onValueChange={(v) => setFormData({ ...formData, recurring: v as Task['recurring'] })}>
-                          <SelectTrigger><SelectValue /></SelectTrigger>
+                          <SelectTrigger className="w-full py-px pl-0 bg-transparent outline-none focus:ring-0 border-0 border-b-2 border-purple-400 dark:border-purple-500 focus:outline-none text-slate-800 dark:text-slate-100 rounded-none shadow-none [&_svg]:text-purple-500 dark:[&_svg]:text-purple-400 data-[placeholder]:text-slate-400 dark:data-[placeholder]:text-slate-500"><SelectValue /></SelectTrigger>
                           <SelectContent>
                             <SelectItem value="none">Não recorrente</SelectItem>
                             <SelectItem value="daily">Diário</SelectItem>
@@ -1094,7 +1325,7 @@ export default function NexusApp() {
                         </Select>
                       </div>
                       <div>
-                        <Label>Tags</Label>
+                        <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Tags</Label>
                         <div className="flex flex-wrap gap-1 mt-1">
                           {tags.slice(0, 4).map(tag => (
                             <Button
@@ -1102,7 +1333,11 @@ export default function NexusApp() {
                               type="button"
                               size="sm"
                               variant={formData.tags.includes(tag.id) ? "default" : "outline"}
-                              className="text-xs h-6 px-2"
+                              className={`text-xs h-6 px-2 ${
+                                formData.tags.includes(tag.id)
+                                  ? 'text-white'
+                                  : 'bg-transparent border-purple-400 dark:border-purple-500/60 text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30'
+                              }`}
                               style={formData.tags.includes(tag.id) ? { backgroundColor: tag.color, borderColor: tag.color } : {}}
                               onClick={() => {
                                 const newTags = formData.tags.includes(tag.id)
@@ -1120,8 +1355,8 @@ export default function NexusApp() {
 
                     <div>
                       <div className="flex items-center justify-between mb-2">
-                        <Label>Subtarefas</Label>
-                        <Button size="sm" variant="ghost" onClick={() => {
+                        <Label className="text-sm text-slate-700 dark:text-slate-200 font-semibold">Subtarefas</Label>
+                        <Button size="sm" variant="ghost" className="text-purple-600 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30" onClick={() => {
                           setFormData({
                             ...formData,
                             subtasks: [...formData.subtasks, { id: `st_${Date.now()}`, title: '', completed: false }]
@@ -1132,7 +1367,7 @@ export default function NexusApp() {
                       </div>
                       {formData.subtasks.map((subtask, index) => (
                         <div key={subtask.id} className="flex items-center gap-2 mb-1">
-                          <Minus className="w-4 h-4 text-slate-400" />
+                          <Minus className="w-4 h-4 text-purple-400 dark:text-purple-500/70" />
                           <Input
                             placeholder={`Subtarefa ${index + 1}`}
                             value={subtask.title}
@@ -1142,9 +1377,9 @@ export default function NexusApp() {
                               );
                               setFormData({ ...formData, subtasks: updated });
                             }}
-                            className="flex-1 h-8 text-sm"
+                            className="flex-1 h-8 text-sm bg-transparent outline-none focus:ring-0 border-0 border-b-2 border-purple-400 dark:border-purple-500 placeholder:text-slate-400 dark:placeholder:text-slate-500 focus:outline-none text-slate-800 dark:text-slate-100 placeholder:text-xs rounded-none shadow-none"
                           />
-                          <Button size="icon" variant="ghost" className="h-8 w-8" onClick={() => {
+                          <Button size="icon" variant="ghost" className="h-8 w-8 text-purple-600 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-900/30" onClick={() => {
                             setFormData({
                               ...formData,
                               subtasks: formData.subtasks.filter(st => st.id !== subtask.id)
@@ -1156,9 +1391,9 @@ export default function NexusApp() {
                       ))}
                     </div>
 
-                    <div className="flex gap-2">
-                      <Button className="flex-1 bg-gradient-to-r from-purple-500 to-pink-500" onClick={handleCreateTask} disabled={isSubmitting}>Publicar</Button>
-                      <Button variant="outline" className="flex-1" disabled={isSubmitting} onClick={async () => {
+                    <div className="inline-flex gap-5 pt-1">
+                      <Button className="flex-1 px-6 focus:outline-none focus:scale-110 font-semibold text-xs py-2 rounded-[5px] hover:scale-110 transition-all text-white bg-gradient-to-r from-purple-500 to-pink-500 shadow-lg shadow-purple-500/40 btn-glow" onClick={handleCreateTask} disabled={isSubmitting}>Publicar</Button>
+                      <Button variant="outline" className="flex-1 px-6 focus:outline-none focus:scale-110 font-semibold text-xs py-2 rounded-[5px] hover:scale-110 transition-all text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 border-purple-400/50 dark:border-purple-500/40 shadow-lg shadow-slate-500/20" disabled={isSubmitting} onClick={async () => {
                         setIsSubmitting(true);
                         try {
                           const newTask = buildTask({
@@ -1193,6 +1428,8 @@ export default function NexusApp() {
                         }
                       }}>Rascunho</Button>
                     </div>
+                    </div>
+                  </div>
                   </div>
                 </DialogContent>
               </Dialog>
@@ -1201,55 +1438,96 @@ export default function NexusApp() {
         </div>
       </header>
 
-      <main className="px-2 md:px-3 py-3 md:py-4">
+      <main className="relative z-10 px-2 md:px-3 py-3 md:py-4">
+        <section className="mb-4 md:mb-6 relative overflow-hidden rounded-xl">
+          <div className="flex items-center justify-between gap-2 select-none">
+            <div>
+              <motion.h2
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ duration: 0.5, ease: 'easeOut' }}
+                className="text-xl md:text-3xl font-black tracking-tight leading-none text-slate-900 dark:text-white"
+              >
+                {'O seu dia, '}
+                <span className="bg-gradient-to-r from-purple-600 via-pink-500 to-blue-500 bg-clip-text text-transparent">
+                  {'em ordem.'}
+                </span>
+              </motion.h2>
+              <motion.p
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ delay: 0.25, duration: 0.5 }}
+                className="mt-1 text-xs md:text-sm text-slate-500 dark:text-slate-400"
+              >
+                {new Date().toLocaleDateString('pt-BR', { weekday: 'long', day: 'numeric', month: 'long' })}
+              </motion.p>
+            </div>
+          </div>
+        </section>
+
+        <div aria-hidden="true" className="relative mb-4 md:mb-6 overflow-hidden rounded-lg bg-slate-900 dark:bg-slate-950">
+          <div className="flex w-max animate-marquee py-1.5 md:py-2">
+            {Array.from({ length: 2 }).map((_, half) => (
+              <div key={half} className="flex shrink-0 items-center">
+                {['focar', 'concluir', 'produzir', 'acompanhar', 'evoluir', 'celebrar'].map((word) => (
+                  <span key={word} className="mx-4 md:mx-6 whitespace-nowrap text-xs md:text-sm font-bold uppercase tracking-[0.25em] text-slate-300 dark:text-slate-400">
+                    {word}
+                    <span className="mx-1 text-pink-500">✦</span>
+                  </span>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+
         <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="w-full">
           <TabsList className="grid w-full grid-cols-2 mb-4 md:mb-6 bg-slate-100 dark:bg-slate-800 p-1 rounded-lg">
-            <TabsTrigger value="tarefas" className="text-xs md:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-purple-500 data-[state=active]:to-pink-500 data-[state=active]:text-white rounded-md transition-all">
+            <TabsTrigger value="tarefas" className="text-xs md:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-purple-500 data-[state=active]:to-pink-500 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-purple-500/30 rounded-md transition-all duration-200">
               <List className="w-3 h-3 md:w-4 md:h-4 mr-1 md:mr-2" />
               <span className="hidden sm:inline">Tarefas</span>
             </TabsTrigger>
-            <TabsTrigger value="kanban" className="text-xs md:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-purple-500 data-[state=active]:to-pink-500 data-[state=active]:text-white rounded-md transition-all">
+            <TabsTrigger value="kanban" className="text-xs md:text-sm data-[state=active]:bg-gradient-to-r data-[state=active]:from-purple-500 data-[state=active]:to-pink-500 data-[state=active]:text-white data-[state=active]:shadow-lg data-[state=active]:shadow-purple-500/30 rounded-md transition-all duration-200">
               <LayoutGrid className="w-3 h-3 md:w-4 md:h-4 mr-1 md:mr-2" />
               <span className="hidden sm:inline">Kanban</span>
             </TabsTrigger>
           </TabsList>
 
           <TabsContent value="tarefas" className="space-y-0">
-            <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 md:gap-4 mb-6" role="region" aria-label="Estatísticas">
-              <Card className="border-l-4 border-l-blue-500">
-                <CardContent className="pt-3 pb-3">
-                  <p className="text-xs md:text-sm text-slate-500">📅 Para Hoje</p>
-                  <p className="text-xl md:text-2xl font-bold">{stats.today}</p>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-purple-500">
-                <CardContent className="pt-3 pb-3">
-                  <p className="text-xs md:text-sm text-slate-500">Pendentes</p>
-                  <p className="text-xl md:text-2xl font-bold">{stats.pending}</p>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-orange-500">
-                <CardContent className="pt-3 pb-3">
-                  <p className="text-xs md:text-sm text-slate-500">🔥 Sequência</p>
-                  <p className="text-xl md:text-2xl font-bold">{stats.streak} dias</p>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-yellow-500">
-                <CardContent className="pt-3 pb-3">
-                  <p className="text-xs md:text-sm text-slate-500">🏆 Conquistas</p>
-                  <p className="text-xl md:text-2xl font-bold">{unlockedAchievements}/{achievements.length}</p>
-                </CardContent>
-              </Card>
-              <Card className="border-l-4 border-l-emerald-500">
-                <CardContent className="pt-3 pb-3">
-                  <p className="text-xs md:text-sm text-slate-500">Concluídas</p>
-                  <p className="text-xl md:text-2xl font-bold">{stats.completed}</p>
-                </CardContent>
-              </Card>
-            </div>
+            <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-2 md:gap-4 mb-4 md:mb-6" role="region" aria-label="Estatísticas">
+                <Card className="glass-card border-l-4 border-l-blue-500 transition-all duration-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-blue-500/20">
+                  <CardContent className="pt-3 pb-3">
+                    <p className="text-[11px] md:text-xs font-semibold uppercase tracking-wider text-slate-500">📅 Para Hoje</p>
+                    <p className="text-2xl md:text-3xl font-black tracking-tight bg-gradient-to-r from-blue-600 to-cyan-500 bg-clip-text text-transparent">{stats.today}</p>
+                  </CardContent>
+                </Card>
+                <Card className="glass-card border-l-4 border-l-purple-500 transition-all duration-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-purple-500/20">
+                  <CardContent className="pt-3 pb-3">
+                    <p className="text-[11px] md:text-xs font-semibold uppercase tracking-wider text-slate-500">Pendentes</p>
+                    <p className="text-2xl md:text-3xl font-black tracking-tight bg-gradient-to-r from-purple-600 to-pink-500 bg-clip-text text-transparent">{stats.pending}</p>
+                  </CardContent>
+                </Card>
+                <Card className="glass-card border-l-4 border-l-orange-500 transition-all duration-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-orange-500/20">
+                  <CardContent className="pt-3 pb-3">
+                    <p className="text-[11px] md:text-xs font-semibold uppercase tracking-wider text-slate-500">🔥 Sequência</p>
+                    <p className="text-2xl md:text-3xl font-black tracking-tight bg-gradient-to-r from-orange-500 to-amber-400 bg-clip-text text-transparent">{stats.streak} <span className="text-sm font-bold text-slate-400">dias</span></p>
+                  </CardContent>
+                </Card>
+                <Card className="glass-card border-l-4 border-l-yellow-500 transition-all duration-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-yellow-500/20">
+                  <CardContent className="pt-3 pb-3">
+                    <p className="text-[11px] md:text-xs font-semibold uppercase tracking-wider text-slate-500">🏆 Conquistas</p>
+                    <p className="text-2xl md:text-3xl font-black tracking-tight bg-gradient-to-r from-yellow-500 to-orange-500 bg-clip-text text-transparent">{unlockedAchievements}<span className="text-sm font-bold text-slate-400">/{achievements.length}</span></p>
+                  </CardContent>
+                </Card>
+                <Card className="glass-card border-l-4 border-l-emerald-500 transition-all duration-200 hover:-translate-y-1 hover:shadow-lg hover:shadow-emerald-500/20">
+                  <CardContent className="pt-3 pb-3">
+                    <p className="text-[11px] md:text-xs font-semibold uppercase tracking-wider text-slate-500">Concluídas</p>
+                    <p className="text-2xl md:text-3xl font-black tracking-tight bg-gradient-to-r from-emerald-500 to-teal-400 bg-clip-text text-transparent">{stats.completed}</p>
+                  </CardContent>
+                </Card>
+              </div>
 
         {tasks.filter(t => t.dueDate && t.status !== 'completed').length > 0 && (
-          <Card className="mb-4 md:mb-6">
+          <Card className="glass-card mb-4 md:mb-6">
             <CardHeader className="py-2 px-3 md:py-3 md:px-4">
               <CardTitle className="text-sm md:text-base flex items-center gap-2">
                 <CalendarIcon className="w-4 h-4" />
@@ -1308,11 +1586,11 @@ export default function NexusApp() {
           </Card>
         )}
 
-        <div className="flex flex-col sm:flex-row gap-2 md:gap-4 mb-4 md:mb-6">
-          <div className="relative flex-1">
+        <div className="flex flex-col sm:flex-row gap-2 md:gap-4 mb-2 md:mb-3">
+          <div className="relative flex-1 glow-focus">
             <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" aria-hidden="true" />
             <Input placeholder="Buscar tarefas..." value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)} className="pl-10 h-10" aria-label="Buscar tarefas" />
+              onChange={(e) => setSearchQuery(e.target.value)} className="pl-10 h-10 glass-card border-0" aria-label="Buscar tarefas" />
           </div>
           <Select value={statusFilter} onValueChange={setStatusFilter}>
             <SelectTrigger className="w-full sm:w-32 md:w-40 h-10" aria-label="Filtrar por status">
@@ -1329,12 +1607,81 @@ export default function NexusApp() {
           </Select>
         </div>
 
+        <div className="flex flex-wrap items-center gap-1.5 md:gap-2 mb-4 md:mb-6" role="group" aria-label="Filtros rápidos">
+          <span className="text-[10px] md:text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1 mr-1">
+            <Zap className="w-3 h-3" aria-hidden="true" />
+            Prioridade
+          </span>
+          {([
+            { value: 'all', label: 'Todas' },
+            { value: 'urgent', label: 'Urgente', dot: 'bg-red-500' },
+            { value: 'high', label: 'Alta', dot: 'bg-orange-500' },
+            { value: 'medium', label: 'Média', dot: 'bg-blue-500' },
+            { value: 'low', label: 'Baixa', dot: 'bg-slate-400' },
+          ] as { value: PriorityFilter; label: string; dot?: string }[]).map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setPriorityFilter(opt.value === priorityFilter ? 'all' : opt.value)}
+              title={`Filtrar por prioridade ${opt.label}`}
+              aria-pressed={priorityFilter === opt.value}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] md:text-xs font-medium transition-all duration-200 active:scale-95 ${
+                priorityFilter === opt.value
+                  ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-md shadow-purple-500/30'
+                  : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-purple-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
+              }`}
+            >
+              {opt.dot && <span className={`w-2 h-2 rounded-full ${opt.dot} ${priorityFilter === opt.value ? 'opacity-90' : 'opacity-60'}`} aria-hidden="true" />}
+              {opt.label}
+            </button>
+          ))}
+
+          <Separator orientation="vertical" className="mx-1 h-4 hidden sm:inline-block" />
+
+          <span className="text-[10px] md:text-xs font-semibold uppercase tracking-wider text-slate-400 flex items-center gap-1 mr-1">
+            <Clock className="w-3 h-3" aria-hidden="true" />
+            Prazo
+          </span>
+          {([
+            { value: 'all', label: 'Todos' },
+            { value: 'today', label: 'Vence hoje' },
+            { value: 'overdue', label: 'Atrasadas' },
+          ] as { value: DueFilter; label: string }[]).map(opt => (
+            <button
+              key={opt.value}
+              type="button"
+              onClick={() => setDueFilter(opt.value === dueFilter ? 'all' : opt.value)}
+              title={`Filtrar por prazo: ${opt.label}`}
+              aria-pressed={dueFilter === opt.value}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] md:text-xs font-medium transition-all duration-200 active:scale-95 ${
+                dueFilter === opt.value
+                  ? 'bg-gradient-to-r from-purple-500 to-pink-500 text-white shadow-md shadow-purple-500/30'
+                  : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-purple-50 dark:hover:bg-slate-700 border border-slate-200 dark:border-slate-700'
+              }`}
+            >
+              {opt.label}
+            </button>
+          ))}
+
+          {(priorityFilter !== 'all' || dueFilter !== 'all') && (
+            <button
+              type="button"
+              onClick={() => { setPriorityFilter('all'); setDueFilter('all'); }}
+              className="inline-flex items-center gap-1 px-2 py-1 rounded-full text-[11px] font-medium text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+              aria-label="Limpar filtros rápidos"
+            >
+              <X className="w-3 h-3" aria-hidden="true" />
+              Limpar
+            </button>
+          )}
+        </div>
+
         <div className="space-y-4 md:space-y-6">
           {tasksByEnergy.map(({ level, tasks: levelTasks }) => (
             levelTasks.length > 0 ? (
             <motion.div key={level} initial={{ opacity: 0, x: -20 }} animate={{ opacity: 1, x: 0 }}
               transition={{ delay: level * 0.1 }}>
-              <Card className="overflow-hidden">
+              <Card className="glass-card overflow-hidden">
                 <div className={`h-1 bg-gradient-to-r ${energyConfig[level].color}`} />
                 <CardHeader className="py-2 px-3 md:py-3 md:px-4">
                   <div className="flex items-center justify-between">
@@ -1352,7 +1699,7 @@ export default function NexusApp() {
                           <div 
                             key={task.id} 
                             id={task.dueDate ? `task-date-${task.dueDate.slice(0,10)}` : undefined}
-                            className="p-3 md:p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer active:bg-slate-100"
+                            className="group p-3 md:p-4 hover:bg-slate-50 dark:hover:bg-slate-800/50 transition-colors cursor-pointer active:bg-slate-100"
                             role="listitem"
                             tabIndex={0}
                             onKeyDown={(e) => {
@@ -1375,7 +1722,9 @@ export default function NexusApp() {
                                 aria-label="Concluir tarefa" />
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center gap-1 md:gap-2 mb-1 flex-wrap">
-                                  <h4 className="font-medium text-sm md:text-base truncate">{task.title}</h4>
+                                  <div className="w-full sm:w-auto min-w-0 sm:max-w-[60%]">
+                                    <EditableTitle task={task} onRename={(id, title) => handleUpdateTaskDirect(id, { title })} />
+                                  </div>
                                   <Badge variant="secondary" className={`text-[10px] md:text-xs ${priorityConfig[task.priority].textColor}`}>
                                     {priorityConfig[task.priority].label}
                                   </Badge>
@@ -1486,6 +1835,87 @@ export default function NexusApp() {
           ))}
         </div>
 
+        {(() => {
+          const hasActiveTasks = tasks.some(t => t.status !== 'completed' && t.status !== 'archived');
+          const hasFilter = searchQuery || statusFilter !== 'all' || priorityFilter !== 'all' || dueFilter !== 'all';
+          const hasVisibleCompleted = statusFilter === 'all' && filteredTasks.some(t => t.status === 'completed');
+          if (!hasActiveTasks && !hasFilter && hasVisibleCompleted) {
+            return (
+              <motion.div
+                initial={{ opacity: 0, y: 10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="glass-card rounded-xl p-8 text-center flex flex-col items-center gap-2"
+              >
+                <div className="w-14 h-14 rounded-full bg-gradient-to-br from-emerald-500/20 to-teal-500/20 flex items-center justify-center mb-1">
+                  <CheckCheck className="w-7 h-7 text-emerald-400" aria-hidden="true" />
+                </div>
+                <h3 className="font-semibold text-slate-800 dark:text-slate-100">Tudo em dia!</h3>
+                <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm">
+                  Você concluiu todas as tarefas ativas. As últimas concluídas aparecem na seção abaixo.
+                </p>
+              </motion.div>
+            );
+          }
+          return null;
+        })()}
+
+        {filteredTasks.filter(t => t.status !== 'completed' && t.status !== 'archived').length === 0 && tasks.filter(t => t.status !== 'archived').length > 0 && statusFilter !== 'completed' && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-card rounded-xl p-8 text-center flex flex-col items-center gap-2"
+          >
+            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mb-1">
+              <Search className="w-6 h-6 text-purple-400" aria-hidden="true" />
+            </div>
+            <h3 className="font-semibold text-slate-800 dark:text-slate-100">
+              Nenhum resultado encontrado
+            </h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm">
+              Nenhuma tarefa atende aos filtros atuais. Ajuste a busca ou limpe os filtros para ver mais itens.
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-2"
+              onClick={() => {
+                setSearchQuery('');
+                setStatusFilter('all');
+                setPriorityFilter('all');
+                setDueFilter('all');
+              }}
+            >
+              <X className="w-3.5 h-3.5 mr-1.5" aria-hidden="true" />
+              Limpar filtros
+            </Button>
+          </motion.div>
+        )}
+
+        {tasks.length === 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="glass-card rounded-xl p-8 md:p-12 text-center flex flex-col items-center gap-2"
+          >
+            <div className="w-16 h-16 rounded-full bg-gradient-to-br from-purple-500/20 via-pink-500/20 to-sky-500/20 flex items-center justify-center mb-2">
+              <CheckSquare className="w-8 h-8 text-purple-400" aria-hidden="true" />
+            </div>
+            <h3 className="font-semibold text-lg text-slate-800 dark:text-slate-100">
+              Nada por aqui ainda
+            </h3>
+            <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm">
+              Que tal dar o primeiro passo? Crie sua primeira tarefa e comece a organizar o seu dia.
+            </p>
+            <Button
+              className="mt-3 bg-gradient-to-r from-purple-500 to-pink-500 shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 hover:scale-105 active:scale-95 transition-all"
+              onClick={() => setIsCreateOpen(true)}
+            >
+              <Plus className="w-4 h-4 mr-1.5" aria-hidden="true" />
+              Criar minha primeira tarefa
+            </Button>
+          </motion.div>
+        )}
+
         {statusFilter === 'all' && filteredTasks.filter(t => t.status === 'completed').length > 0 && (
           <div className="mt-8">
             <Separator className="mb-4" />
@@ -1513,6 +1943,24 @@ export default function NexusApp() {
                 <LayoutGrid className="w-4 h-4 md:w-5 md:h-5" aria-hidden="true" />
                 Quadro Kanban
               </h2>
+              {tasks.length === 0 && (
+                <div className="glass-card rounded-xl p-6 md:p-8 text-center flex flex-col items-center gap-2 mb-4">
+                  <div className="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500/20 to-pink-500/20 flex items-center justify-center mb-1">
+                    <LayoutGrid className="w-7 h-7 text-purple-400" aria-hidden="true" />
+                  </div>
+                  <h3 className="font-semibold text-slate-800 dark:text-slate-100">Quadro ainda vazio</h3>
+                  <p className="text-sm text-slate-500 dark:text-slate-400 max-w-sm">
+                    Crie uma tarefa para começar a movê-la pelo quadro: arraste os cartões entre as colunas para acompanhar o progresso.
+                  </p>
+                  <Button
+                    className="mt-2 bg-gradient-to-r from-purple-500 to-pink-500 shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 hover:scale-105 active:scale-95 transition-all"
+                    onClick={() => setIsCreateOpen(true)}
+                  >
+                    <Plus className="w-4 h-4 mr-1.5" aria-hidden="true" />
+                    Criar tarefa
+                  </Button>
+                </div>
+              )}
               <div className="overflow-x-auto -mx-3 px-3 md:mx-0 md:px-0">
                 <div className="flex gap-2 md:grid md:grid-cols-5 md:gap-3 min-w-[600px] md:min-w-0 pb-4 md:pb-0" role="region" aria-label="Quadro Kanban">
                   {kanbanColumns.map(column => {
@@ -1692,6 +2140,26 @@ export default function NexusApp() {
                     </SelectContent>
                   </Select>
                 </div>
+              </div>
+              <div>
+                <Label className="flex items-center gap-1.5">
+                  <RotateCw className="w-3.5 h-3.5 text-indigo-500" aria-hidden="true" />
+                  Recorrência
+                </Label>
+                <Select
+                  value={editingTask.recurring || 'none'}
+                  onValueChange={(v) => setEditingTask({ ...editingTask, recurring: v as Task['recurring'] })}>
+                  <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="none">Não repetir</SelectItem>
+                    <SelectItem value="daily">Diária</SelectItem>
+                    <SelectItem value="weekly">Semanal</SelectItem>
+                    <SelectItem value="monthly">Mensal</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  Ao concluir, agenda automaticamente a próxima ocorrência.
+                </p>
               </div>
               <div className="flex gap-2">
                 <Button className="flex-1" onClick={() => handleUpdateTask(editingTask.id, editingTask)}>
